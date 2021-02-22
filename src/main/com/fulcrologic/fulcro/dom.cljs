@@ -108,7 +108,7 @@
   ([tag opts]
    (js/React.createElement tag opts))
   ([tag opts & children]
-   (js/React.createElement tag opts children)))
+   (apply js/React.createElement tag opts children)))
 
 (defn convert-props
   "Given props, which can be nil, a js-obj or a clj map: returns a js object."
@@ -163,7 +163,7 @@
     (specify! (.-prototype ctor)
       Object
       (onChange [this event]
-        (when-let [handler (.-onChange (.-props this))]
+        (when-let [handler (gobj/get (.-props this) "onChange")]
           (handler event)
           (update-state
             this (.-props this)
@@ -187,7 +187,7 @@
 
       (render [this]
         (js/React.createElement element (gobj/getValueByKeys this "state" "cached-props"))))
-    (let [real-factory (js/React.createFactory ctor)]
+    (let [real-factory (fn [& args] (apply js/React.createElement ctor args))]
       (fn [props & children]
         (let [t (gobj/get props "type")]
           (if (= t "file")

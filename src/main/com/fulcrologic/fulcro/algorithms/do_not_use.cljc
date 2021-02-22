@@ -67,8 +67,9 @@
   #?(:clj  (java.util.Date.)
      :cljs (js/Date.)))
 
-(defn deep-merge [& xs]
+(defn deep-merge
   "Merges nested maps without overwriting existing keys."
+  [& xs]
   (if (every? map? xs)
     (apply merge-with deep-merge xs)
     (last xs)))
@@ -145,6 +146,7 @@
 (defn ast->query
   "Workaround for bug in EQL 0.0.9 and earlier"
   [ast]
-  (if (= :root (:type ast))
-    (eql/ast->query ast)
-    [(eql/ast->expr ast true)]))
+  (as-> (eql/ast->expr ast true) <>
+    (if (vector? <>)
+      <>
+      [<>])))

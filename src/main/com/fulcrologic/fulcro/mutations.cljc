@@ -50,6 +50,7 @@
     [taoensso.timbre :as log]
     [taoensso.encore :as enc]
     [clojure.spec.alpha :as s]
+    [com.fulcrologic.fulcro.algorithms.do-not-use :as futil]
     [com.fulcrologic.fulcro.algorithms.data-targeting :as targeting]
     [com.fulcrologic.fulcro.algorithms.merge :as merge]
     [com.fulcrologic.fulcro.algorithms.lookup :as ah]
@@ -161,9 +162,7 @@
         ;; work with.
         {:keys [body transaction]} result
         mark-query    (if transmitted-ast
-                        (if (= :root (:type transmitted-ast))
-                          (eql/ast->query transmitted-ast)
-                          [(eql/ast->expr transmitted-ast true)])
+                        (futil/ast->query transmitted-ast)
                         transaction)
         body          (if (and body mark-query)
                         (merge/mark-missing body mark-query)
@@ -251,12 +250,22 @@
   "Toggle the given boolean `field` on the specified component. It is recommended you use this function only on
   UI-related data (e.g. form checkbox checked status) and write clear top-level transactions for anything more complicated."
   [comp field]
+  (comp/transact! comp `[(toggle {:field ~field})] {:compressible? true}))
+
+(defn toggle!!
+  "Like toggle!, but synchronously refreshes `comp` and nothing else."
+  [comp field]
   (comp/transact!! comp `[(toggle {:field ~field})] {:compressible? true}))
 
 (defn set-value!
   "Set a raw value on the given `field` of a `component`. It is recommended you use this function only on
   UI-related data (e.g. form inputs that are used by the UI, and not persisted data). Changes made via these
   helpers are compressed in the history."
+  [component field value]
+  (comp/transact! component `[(set-props ~{field value})] {:compressible? true}))
+
+(defn set-value!!
+  "Just like set-value!, but synchronously updates `component` and nothing else."
   [component field value]
   (comp/transact!! component `[(set-props ~{field value})] {:compressible? true}))
 
@@ -280,6 +289,13 @@
   (let [value (ensure-integer (if event (evt/target-value event) value))]
     (set-value! component field value)))
 
+(defn set-integer!!
+  "Just like set-integer!, but synchronously refreshes `component` and nothing else."
+  [component field & {:keys [event value]}]
+  (assert (and (or event value) (not (and event value))) "Supply either :event or :value")
+  (let [value (ensure-integer (if event (evt/target-value event) value))]
+    (set-value!! component field value)))
+
 #?(:cljs
    (defn- ensure-double [v]
      (let [rv (js/parseFloat v)]
@@ -296,6 +312,13 @@
   (assert (and (or event value) (not (and event value))) "Supply either :event or :value")
   (let [value (ensure-double (if event (evt/target-value event) value))]
     (set-value! component field value)))
+
+(defn set-double!!
+  "Just like set-double!, but synchronously refreshes `component` and nothing else."
+  [component field & {:keys [event value]}]
+  (assert (and (or event value) (not (and event value))) "Supply either :event or :value")
+  (let [value (ensure-double (if event (evt/target-value event) value))]
+    (set-value!! component field value)))
 
 (defn set-string!
   "Set a string on the given `field` of a `component`. The string can be literal via named parameter `:value` or
@@ -315,6 +338,13 @@
   (assert (and (or event value) (not (and event value))) "Supply either :event or :value")
   (let [value (if event (evt/target-value event) value)]
     (set-value! component field value)))
+
+(defn set-string!!
+  "Just like set-string!, but synchronously refreshes `component` and nothing else."
+  [component field & {:keys [event value]}]
+  (assert (and (or event value) (not (and event value))) "Supply either :event or :value")
+  (let [value (if event (evt/target-value event) value)]
+    (set-value!! component field value)))
 
 (defn returning
   "Indicate the the remote operation will return a value of the given component type.

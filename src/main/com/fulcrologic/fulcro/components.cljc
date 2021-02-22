@@ -10,6 +10,7 @@
     [edn-query-language.core :as eql]
     [clojure.spec.alpha :as s]
     [taoensso.timbre :as log]
+    [taoensso.encore :as enc]
     [clojure.walk :refer [prewalk]]
     [clojure.string :as str]
     [com.fulcrologic.fulcro.algorithms.do-not-use :as util]
@@ -152,6 +153,10 @@
     (keyword? classname) (get @component-registry classname)
     (symbol? classname) (let [k (keyword (namespace classname) (name classname))]
                           (get @component-registry k))
+    (and (string? classname)
+      (str/includes? classname "/")) (let [[nspc nm] (str/split classname #"/")
+                                           k (keyword nspc nm)]
+                                       (get @component-registry k))
     :otherwise nil))
 
 (declare props)
@@ -175,7 +180,7 @@
         (not (empty? computed-map)) (assoc :fulcro.client.primitives/computed computed-map)))))
 
 (defn get-computed
-  "Return the computed properties on a component or its props."
+  "Return the computed properties on a component or its props. Note that it requires that the normal properties are not nil."
   ([x]
    (get-computed x []))
   ([x k-or-ks]
@@ -215,6 +220,11 @@
   [x]
   #?(:clj  (if (component-class? x) x (:fulcro$class x))
      :cljs (or (gobj/get x "type") (type x))))
+
+(defn get-class
+  "Returns the react type (component class) of the given React element (instance). Is identity if used on a class."
+  [instance]
+  (react-type instance))
 
 (defn component-options
   "Returns the map of options that was specified (via `defsc`) for the component class."
@@ -448,7 +458,11 @@
                                         :cljs$lang$type         true
                                         :cljs$lang$ctorStr      name
                                         :cljs$lang$ctorPrWriter (fn [_ writer _] (cljs.core/-write writer name))}
-                                 getDerivedStateFromError (assoc :getDerivedStateFromError getDerivedStateFromError)
+                                 getDerivedStateFromError (assoc :getDerivedStateFromError (fn [error]
+                                                                                             (let [v (getDerivedStateFromError error)]
+                                                                                               (if (coll? v)
+                                                                                                 #js {"fulcro$state" v}
+                                                                                                 v))))
                                  getDerivedStateFromProps (assoc :getDerivedStateFromProps (static-wrap-props-state-handler getDerivedStateFromProps)))]
          (gobj/extend (.-prototype cls) js/React.Component.prototype js-instance-props
            #js {"fulcro$options" options})
@@ -466,7 +480,7 @@
   [render-fn component-options]
   #?(:cljs
      (let [k              (:componentName component-options)
-           faux-classname (str (or k (throw (ex-info "Missing :componentName for hooks component" {}))))]
+           faux-classname (str (or (str/join "/" [(namespace k) (name k)]) (throw (ex-info "Missing :componentName for hooks component" {}))))]
        (gobj/extend render-fn
          #js {:fulcro$options         component-options
               :displayName            faux-classname
@@ -854,7 +868,12 @@
                     (log/warn "String ref on " (component-name class) " should be a function."))
 
                   (when (or (nil? props) (not (gobj/containsKey props "fulcro$value")))
-                    (log/error "Props middleware seems to have the corrupted props for " (component-name class))))))
+                    (log/error "Props middleware seems to have the corrupted props for " (component-name class)))
+
+                  (when-not (map? (gobj/get props "fulcro$value"))
+                    (log/error "Props passed to" (component-name class) "are of the type"
+                               (type (gobj/get props "fulcro$value"))
+                               "instead of a map. Perhaps you meant to `map` the component over the props?")))))
            (create-element class props children)))
        {:class     class
         :queryid   qid
@@ -901,9 +920,11 @@
     the network portion of the transaction (assuming it has not already completed).
   - `:compressible?` - boolean. Check compressible-transact! docs.
   - `:synchronous?` - boolean. When turned on the transaction will run immediately on the calling thread. If run against
-  a component the props will be immediately tunneled back to the calling component, allowing for React (raw) input
+  a component then the props will be immediately tunneled back to the calling component, allowing for React (raw) input
   event handlers to behave as described in standard React Forms docs (uses setState behind the scenes). Any remote operations
-  will still be queued as normal. Calling `transact!!` is a shorthand for this option.
+  will still be queued as normal. Calling `transact!!` is a shorthand for this option. WARNING: ONLY the given component will
+  be refreshed in the UI. If you have dependent data elsewhere in the UI you must either use `transact!` or schedule
+  your own global render using `app/schedule-render!`.
   ` `:after-render?` - Wait until the next render completes before allowing this transaction to run. This can be used
   when calling `transact!` from *within* another mutation to ensure that the effects of the current mutation finish
   before this transaction takes control of the CPU. This option defaults to `false`, but `defmutation` causes it to
@@ -938,15 +959,20 @@
   raw DOM inputs via component-local state. This prevents things like the cursor jumping to the end of inputs
   unexpectedly.
 
-  If you're using this, you should also set the compiler option:
+  WARNING: Using an `app` instead of a component in synchronous transactions makes no sense. You must pass a component
+  that has an ident.
+
+  If you're using this, you can also set the compiler option:
 
   ```
   :compiler-options {:external-config {:fulcro     {:wrap-inputs? false}}}
   ```
+
   to turn off Fulcro DOM's generation of wrapped inputs (which try to solve this problem in a less-effective way).
+
+  WARNING: Synchronous rendering does *not* refresh the full UI, only the component.
   "
-  ([component tx]
-   (transact! component tx {:synchronous? true}))
+  ([component tx] (transact!! component tx {}))
   ([component tx options]
    (transact! component tx (merge options {:synchronous? true}))))
 
@@ -1000,9 +1026,13 @@
   with their query ID."
   [query]
   (let [metadata (meta query)]
-    (with-meta
-      (mapv link-element query)
-      metadata)))
+    (if (map? query)
+      (with-meta
+        (enc/map-vals (fn [ele] (let [{:keys [queryid]} (meta ele)] queryid)) query)
+        metadata)
+      (with-meta
+        (mapv link-element query)
+        metadata))))
 
 (defn normalize-query
   "Given a state map and a query, returns a state map with the query normalized into the database. Query fragments
@@ -1069,6 +1099,45 @@
         (when schedule-render! (schedule-render! app {:force-root? true})))
       (when #?(:clj false :cljs goog.DEBUG)
         (log/error "Unable to set query. Invalid arguments.")))))
+
+(letfn [(--set-query! [app class-or-factory {:keys [query] :as params}]
+          (let [state-atom (:com.fulcrologic.fulcro.application/state-atom app)
+                queryid    (cond
+                             (string? class-or-factory) class-or-factory
+                             (some-> class-or-factory meta (contains? :queryid)) (some-> class-or-factory meta :queryid)
+                             :otherwise (query-id class-or-factory nil))]
+            (if (and (string? queryid) (or query params))
+              (swap! state-atom set-query* class-or-factory {:queryid queryid :query query :params params})
+              (when #?(:clj false :cljs goog.DEBUG)
+                (log/error "Unable to set query. Invalid arguments.")))))]
+  (defn refresh-dynamic-queries!
+    "Refresh the current dynamic queries in app state to reflect any updates to the static queries of the components.
+
+     This can be used at development time to update queries that have changed but that hot code reload does not
+     reflect (because there is a current saved query in state). This is *not* always what you want, since a component
+     may have a custom query whose prop-level elements are set to a particular thing on purpose.
+
+     An component that has `:preserve-dynamic-query? true` in its component options will be ignored by
+     this function."
+    ([app-ish cls force?]
+     (let [app (any->app app-ish)]
+       (let [preserve? (and (not force?) (component-options cls :preserve-dynamic-query?))]
+         (when-not preserve?
+           (set-query! app cls {:query (get-query cls {})})))))
+    ([app-ish]
+     (let [{:com.fulcrologic.fulcro.application/keys [state-atom] :as app} (any->app app-ish)
+           state-map  @state-atom
+           queries    (get state-map ::queries)
+           classnames (keys queries)]
+       (doseq [nm classnames
+               :let [cls       (registry-key->class nm)
+                     preserve? (component-options cls :preserve-dynamic-query?)]]
+         (when-not preserve?
+           (--set-query! app cls {:query (get-query cls {})})))
+       (let [index-root!      (ah/app-algorithm app :index-root!)
+             schedule-render! (ah/app-algorithm app :schedule-render!)]
+         (when index-root! (index-root! app))
+         (when schedule-render! (schedule-render! app {:force-root? true})))))))
 
 (defn get-indexes
   "Get all of the indexes from a component instance or app. See also `ident->any`, `class->any`, etc."
@@ -1357,7 +1426,7 @@
             (fn []
               (binding [*app*    (or *app* (isoget-in ~thissym ["props" "fulcro$app"]))
                         *depth*  (inc (or *depth* (isoget-in ~thissym ["props" "fulcro$depth"])))
-                        *shared* (shared *app*)
+                        *shared* (shared (or *app* (isoget-in ~thissym ["props" "fulcro$app"])))
                         *parent* ~thissym]
                 (let [~@computed-bindings
                       ~@extended-bindings]
@@ -1468,7 +1537,7 @@
            ident-form                       (build-ident env thissym propsym ident-template-or-method legal-key-checker)
            state-form                       (build-initial-state env sym initial-state-template-or-method legal-key-checker query-template-or-method)
            query-form                       (build-query-forms env sym thissym propsym query-template-or-method)
-           hooks?                           (:use-hooks? options)
+           hooks?                           (and (cljs? env) (:use-hooks? options))
            render-form                      (if hooks?
                                               (build-hooks-render sym thissym propsym computedsym extra-args body)
                                               (build-render sym thissym propsym computedsym extra-args body))
@@ -1532,7 +1601,7 @@
       ;; pre-merge, use a lamba to modify new merged data with component needs
       :pre-merge (fn [{:keys [data-tree current-normalized state-map query]}] (merge {:ui/default-value :start} data-tree))
 
-      ; React Lifecycle Methods
+      ; React Lifecycle Methods (for the default, class-based components)
       :initLocalState            (fn [this props] ...) ; CAN BE used to call things as you might in a constructor. Return value is initial state.
       :shouldComponentUpdate     (fn [this next-props next-state] ...)
 
@@ -1554,15 +1623,23 @@
       :componentDidCatch         (fn [this error info] ...)
       :getSnapshotBeforeUpdate   (fn [this prevProps prevState] ...)
 
-      ;; static
+      ;; static.
       :getDerivedStateFromProps  (fn [props state] ...)
 
       ;; ADDED for React 16.6:
-      :getDerivedStateFromError  (fn [error] ...)  **NOTE**: OVERWRITES entire state. This differs slightly from React.
+      ;; NOTE: The state returned from this function can either be:
+      ;; a raw js map, where Fulcro's state is in a sub-key: `#js {\"fulcro$state\" {:fulcro :state}}`.
+      ;; or a clj map. In either case this function will *overwrite* Fulcro's component-local state, which is
+      ;; slighly different behavior than raw React (we have no `this`, so we cannot read Fulcro's state to merge it).
+      :getDerivedStateFromError  (fn [error] ...)
 
       NOTE: shouldComponentUpdate should generally not be overridden other than to force it false so
       that other libraries can control the sub-dom. If you do want to implement it, then old props can
       be obtained from (prim/props this), and old state via (gobj/get (. this -state) \"fulcro$state\").
+      
+      ; React Hooks support
+      ;; if true, creates a function-based instead of a class-based component, see the Developer's Guide for details
+      :use-hooks? true
 
       ; BODY forms. May be omitted IFF there is an options map, in order to generate a component that is used only for queries/normalization.
       (dom/div #js {:onClick onSelect} x))
@@ -1590,3 +1667,33 @@
   [app-ish k]
   (some-> app-ish (any->app) (get-in [:com.fulcrologic.fulcro.application/config :external-config k])))
 
+(defn refresh-component!
+  "Request that the given subtree starting a component be refreshed from the app database without re-rendering any parent. This
+  is a synchronous call that will tunnel the props to the given component via an internal call to React setState."
+  [component]
+  (if (component? component)
+    (let [prior-computed (or (get-computed component) {})
+          {:com.fulcrologic.fulcro.application/keys [state-atom runtime-atom]} (any->app component)
+          state-map      @state-atom]
+      (swap! runtime-atom update :com.fulcrologic.fulcro.application/basis-t inc)
+      (binding [fdn/*denormalize-time* (-> @runtime-atom :com.fulcrologic.fulcro.application/basis-t)]
+        (let [ident    (get-ident component)
+              query    (get-query component state-map)
+              ui-props (computed (fdn/db->tree query (get-in state-map ident) state-map) prior-computed)]
+          (tunnel-props! component ui-props))))
+    (log/error "Cannot re-render a non-component")))
+
+(defn get-parent
+  "Returns the nth parent of `this` (a React element). The optional `n` can be 0 (the immediate parent) or any positive
+  integer. If this walks past root then this function returns nil."
+  ([this n]
+   (when-not (component-instance? this)
+     (throw (ex-info "Cannot get parent. First argument is not a component instance." {:arg this})))
+   (loop [element this
+          level   n]
+     (let [result (isoget-in element [:props :fulcro$parent])]
+       (if (and result (pos-int? level))
+         (recur result (dec level))
+         result))))
+  ([this]
+   (get-parent this 0)))

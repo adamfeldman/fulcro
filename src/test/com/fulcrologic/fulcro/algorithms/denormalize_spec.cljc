@@ -1,21 +1,25 @@
 (ns com.fulcrologic.fulcro.algorithms.denormalize-spec
-  (:require [clojure.spec.alpha :as s]
-            [clojure.test :refer [is are deftest]]
-            [clojure.test.check :as tc]
-            [clojure.test.check.clojure-test :as test]
-            [clojure.test.check.generators :as gen]
-            [clojure.test.check.properties :as props]
-            [clojure.walk :as walk]
-            [com.fulcrologic.fulcro.algorithms.denormalize :as denorm]
-            [com.fulcrologic.fulcro.algorithms.legacy-db-tree :as fp]
-            [com.fulcrologic.fulcro.algorithms.normalize :refer [tree->db]]
-            [com.fulcrologic.fulcro.components :as comp]
-            [com.wsscode.pathom.core :as p]
-            [com.wsscode.pathom.test :as ptest]
-            [edn-query-language.core :as eql]
-            [fulcro-spec.core :refer [specification behavior assertions provided component when-mocking]]
-            [fulcro-spec.diff :as diff]
-            [com.fulcrologic.fulcro.algorithms.legacy-db-tree :as fpp]))
+  (:require
+    [clojure.spec.alpha :as s]
+    [clojure.test :refer [is are deftest]]
+    [clojure.test.check :as tc]
+    [clojure.test.check.clojure-test :as test]
+    [clojure.test.check.generators :as gen]
+    [clojure.test.check.properties :as props #?@(:cljs [:refer-macros [for-all]])]
+    [clojure.walk :as walk]
+    [com.fulcrologic.fulcro.algorithms.denormalize :as denorm]
+    [com.fulcrologic.fulcro.algorithms.legacy-db-tree :as fp]
+    [com.fulcrologic.fulcro.algorithms.normalize :refer [tree->db]]
+    [com.fulcrologic.fulcro.components :as comp :refer [defsc]]
+    [com.wsscode.pathom.core :as p]
+    [com.wsscode.pathom.test :as ptest]
+    [edn-query-language.core :as eql]
+    [edn-query-language.gen :as eqlgen]
+    [fulcro-spec.core :refer [specification behavior assertions provided component when-mocking]]
+    [fulcro-spec.diff :as diff]
+    [com.fulcrologic.fulcro.algorithms.legacy-db-tree :as fpp]))
+
+(declare =>)
 
 ;; helpers
 
@@ -248,6 +252,59 @@
     (verify-db->tree-generated [{:A/A [{:A/A* {:A/A [:A/B]}}]}])
     => {:A/A {:A/A* [{}]}}))
 
+(defsc PersonA [_ _]
+  {:query (fn [] '[:person/id {:person/spouse ...}])
+   :ident :person/id})
+
+(defsc Person3 [_ _]
+  {:query (fn [] '[:person/id {:person/spouse 3}])
+   :ident :person/id})
+
+(defsc SelfParentedPerson [_ _]
+  {:query (fn [] '[:person/id {:person/children ...}])
+   :ident :person/id})
+
+(defsc SelfParentedPerson3 [_ _]
+  {:query (fn [] '[:person/id {:person/children 3}])
+   :ident :person/id})
+
+(specification "Infinite loop detection"
+  (let [db {:person/id {1 {:person/id 1 :person/spouse [:person/id 2]}
+                        2 {:person/id 2 :person/spouse [:person/id 1]}
+                        ;; I am my own parent...data error
+                        3 {:person/id 3 :person/children [[:person/id 4]]}
+                        4 {:person/id 4 :person/children [[:person/id 3]]}
+                        }}]
+    (component "To-many"
+      ;; Not supported
+      #_(component "n recursion"
+        (let [tree (denorm/db->tree (comp/get-query SelfParentedPerson3) (get-in db [:person/id 3]) db)]
+          (assertions
+            "Stops the recursion specified depth"
+            tree => {:person/id     1
+                     :person/spouse {:person/id     2
+                                     :person/spouse {:person/id     1
+                                                     :person/spouse {:person/id 2}}}})))
+      (component "... recursion"
+        (let [tree (denorm/db->tree (comp/get-query SelfParentedPerson) (get-in db [:person/id 3]) db)]
+          (assertions
+            "Stops the recursion after items have been seen once"
+            tree => {:person/id 3 :person/children [{:person/id 4 :person/children [{:person/id 3 :person/children []}]}]}))))
+    (component "To-one"
+      (component "n recursion"
+        (let [tree (denorm/db->tree (comp/get-query Person3) (get-in db [:person/id 1]) db)]
+          (assertions
+            "Stops the recursion specified depth"
+            tree => {:person/id     1
+                     :person/spouse {:person/id     2
+                                     :person/spouse {:person/id     1
+                                                     :person/spouse {:person/id 2}}}})))
+      (component "... recursion"
+        (let [tree (denorm/db->tree (comp/get-query PersonA) (get-in db [:person/id 1]) db)]
+          (assertions
+            "Stops the recursion after items have been seen once"
+            tree => {:person/id 1 :person/spouse {:person/id 2 :person/spouse {:person/id 1}}}))))
+    ))
 ;; generative
 
 (defn compare-tree-results [query]
@@ -263,7 +320,7 @@
       (= (denorm/db->tree query tree {}) (fp/db->tree query tree {})))))
 
 (defn gen-tree-props []
-  (eql/make-gen
+  (eqlgen/make-gen
     {::eql/gen-query-expr
      (fn gen-query-expr [{::eql/keys [gen-property]
                           :as        env}]
@@ -276,26 +333,26 @@
 #_(test/defspec generator-makes-valid-db-props {} (valid-db-tree-props))
 
 (defn gen-join-no-links []
-  (eql/make-gen {::eql/gen-query-expr
-                 (fn gen-query-expr [{::eql/keys [gen-property gen-join]
-                                      :as        env}]
-                   (gen/frequency [[20 (gen-property env)]
-                                   [6 (gen-join env)]]))
+  (eqlgen/make-gen {::eql/gen-query-expr
+                    (fn gen-query-expr [{::eql/keys [gen-property gen-join]
+                                         :as        env}]
+                      (gen/frequency [[20 (gen-property env)]
+                                      [6 (gen-join env)]]))
 
-                 ::eql/gen-join-key
-                 (fn gen-join-key [{::eql/keys [gen-property] :as env}]
-                   (gen-property env))
+                    ::eql/gen-join-key
+                    (fn gen-join-key [{::eql/keys [gen-property] :as env}]
+                      (gen-property env))
 
-                 ::eql/gen-join-query
-                 (fn gen-join-query [{::eql/keys [gen-query] :as env}]
-                   (gen-query env))}
+                    ::eql/gen-join-query
+                    (fn gen-join-query [{::eql/keys [gen-query] :as env}]
+                      (gen-query env))}
     ::eql/gen-query))
 
 (comment
   (tc/quick-check 50 (db->tree-consistency-property-without-db (gen-join-no-links)) :max-size 12))
 
 (defn gen-join-with-links []
-  (eql/make-gen
+  (eqlgen/make-gen
     {::eql/gen-query-expr
      (fn gen-query-expr [{::eql/keys [gen-property gen-join]
                           :as        env}]
@@ -315,7 +372,7 @@
   (tc/quick-check 50 (db->tree-consistency-property (gen-join-with-links)) :max-size 12))
 
 (defn gen-links-including-ident-keys []
-  (eql/make-gen
+  (eqlgen/make-gen
     {::eql/gen-query-expr
      (fn gen-query-expr [{::eql/keys [gen-property gen-join]
                           :as        env}]
@@ -331,7 +388,7 @@
   (tc/quick-check 50 (db->tree-consistency-property (gen-links-including-ident-keys)) :max-size 12))
 
 (defn gen-unions []
-  (eql/make-gen
+  (eqlgen/make-gen
     {::eql/gen-query-expr
      (fn gen-query-expr [{::eql/keys [gen-property gen-join]
                           :as        env}]
@@ -352,7 +409,7 @@
   (tc/quick-check 50 (db->tree-consistency-property (gen-unions)) :max-size 12))
 
 (defn gen-recursion []
-  (eql/make-gen
+  (eqlgen/make-gen
     {::eql/gen-query-expr
      (fn gen-query-expr [{::eql/keys [gen-property gen-join]
                           :as        env}]
@@ -373,7 +430,7 @@
   (tc/quick-check 50 (db->tree-consistency-property (gen-recursion)) :max-size 12))
 
 (defn gen-read-queries []
-  (eql/make-gen
+  (eqlgen/make-gen
     {::eql/gen-query-expr
      (fn gen-query-expr [{::eql/keys [gen-property gen-join gen-ident gen-param-expr gen-special-property gen-mutation]
                           :as        env}]

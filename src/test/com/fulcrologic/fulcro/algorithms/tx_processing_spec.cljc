@@ -63,7 +63,7 @@
                                           "schedules activation"
                                           app => mock-app)
 
-      (let [actual (app/default-tx! mock-app '[(f) (g)])
+      (let [actual (txn/default-tx! mock-app '[(f) (g)])
             queue  (-> mock-app ::app/runtime-atom deref ::txn/submission-queue)
             node   (first queue)]
         (assertions
@@ -240,7 +240,7 @@
         (let [sub-q (-> app ::app/runtime-atom deref ::txn/submission-queue)]
           (assertions
             "Removes txn option to run after render"
-            (every? #(not (contains? (::txn/options %) :after-render?)) (log/spy :info sub-q)) => true))))))
+            (every? #(not (contains? (::txn/options %) :after-render?)) sub-q) => true))))))
 
 (defonce aa-track (atom #{}))
 

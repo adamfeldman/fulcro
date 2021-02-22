@@ -158,9 +158,8 @@
         (log/debug "Skipping default merge and calling user-supplied ok-action.")
         (ok-action env))
       (let [{:keys [body transaction]} result
-            query      (or transaction query)
-            mark-query (or transaction (futil/ast->query transmitted-ast))
-            body       (merge/mark-missing body mark-query)
+            mark-query  (or transaction (futil/ast->query transmitted-ast))
+            body        (merge/mark-missing body mark-query)
             {:com.fulcrologic.fulcro.application/keys [state-atom]} app]
         (swap! state-atom (fn [s]
                             (cond-> (merge/merge* s query body)
@@ -274,6 +273,7 @@
   ([app-or-comp server-property-or-ident class-or-factory] (load! app-or-comp server-property-or-ident class-or-factory {}))
   ([app-or-comp server-property-or-ident class-or-factory config]
    (let [app           (comp/any->app app-or-comp)
+         txn-options   (get config ::txn/options {})
          {:keys [load-marker-default query-transform-default load-mutation]} (-> app :com.fulcrologic.fulcro.application/config)
          {:keys [parallel refresh] :as config} (merge
                                                  (cond-> {:marker load-marker-default :parallel false :refresh [] :without #{}}
@@ -282,8 +282,10 @@
          load-sym      (or load-mutation `internal-load!)
          mutation-args (load-params* app server-property-or-ident class-or-factory config)
          abort-id      (:abort-id mutation-args)]
+     (when query-transform-default
+       (log/warn "Query-transform-default is a dangerous option that can break general merge behaviors. Do not use it."))
      (comp/transact! app `[(~load-sym ~mutation-args)]
-       (cond-> {}
+       (cond-> txn-options
          (seq refresh) (assoc :refresh refresh)
          (boolean? parallel) (assoc :parallel? parallel)
          abort-id (assoc ::txn/abort-id abort-id))))))

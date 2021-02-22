@@ -1,22 +1,20 @@
 (ns fulcro-todomvc.ui
   (:require
     [com.fulcrologic.fulcro.algorithms.tempid :as tmp]
-    [com.fulcrologic.fulcro.application :as app]
     [com.fulcrologic.fulcro.components :as comp :refer [defsc]]
     [com.fulcrologic.fulcro.dom :as dom]
     [com.fulcrologic.fulcro.mutations :as mut :refer [defmutation]]
     [com.fulcrologic.fulcro.routing.dynamic-routing :as dr]
     [fulcro-todomvc.api :as api]
-    [com.fulcrologic.fulcro.networking.http-remote :as http-remote]
-    [goog.object :as gobj]
-    [taoensso.timbre :as log]
-    [com.fulcrologic.fulcro.mutations :as m]))
+    [fulcro-todomvc.custom-types :as custom-types]
+    [goog.object :as gobj]))
 
 (defn is-enter? [evt] (= 13 (.-keyCode evt)))
 (defn is-escape? [evt] (= 27 (.-keyCode evt)))
 
-(defn trim-text [text]
+(defn trim-text
   "Returns text without surrounding whitespace if not empty, otherwise nil"
+  [text]
   (let [trimmed-text (clojure.string/trim text)]
     (when-not (empty? trimmed-text)
       trimmed-text)))
@@ -82,7 +80,7 @@
                                      (comp/transact! component `[(api/todo-new-item ~{:list-id id
                                                                                       :id      (tmp/tempid)
                                                                                       :text    trimmed-text})]))))
-                  :onChange    (fn [evt] (mut/set-string! component :ui/new-item-text :event evt))
+                  :onChange    (fn [evt] (mut/set-string!! component :ui/new-item-text :event evt))
                   :placeholder "What needs to be done?"
                   :autoFocus   true}))))
 
@@ -183,4 +181,7 @@
   {:initial-state (fn [p] {:root/router (comp/get-initial-state TopRouter {})})
    :query         [{:root/router (comp/get-query TopRouter)}]}
   (dom/div {}
+    ;; Test button for custom types
+    (dom/button {:onClick (fn []
+                            (comp/transact! this [(api/store-point {:p (custom-types/Point. 4 9)})]))} "Store Point")
     (ui-router router)))

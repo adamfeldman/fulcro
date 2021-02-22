@@ -44,6 +44,13 @@
     (js/alert "Failed to add item to server!"))
   (remote [_] true))
 
+(defmutation store-point
+  "Check the given item, by id."
+  [{:keys [p]}]
+  (action [{:keys [state]}]
+    (swap! state assoc :the-point p))
+  (remote [_] true))
+
 (defmutation todo-check
   "Check the given item, by id."
   [{:keys [id]}]

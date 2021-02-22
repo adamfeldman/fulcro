@@ -122,7 +122,7 @@
       (log/error "Attempt to request alternate response from HTTP remote from multiple items in a single transaction. This could mean more than one transaction got combined into a single request."))
     (if (and alt (= 1 cnt) (contains? legal-response-types alt))
       (let [node         (update-in (first nodes) [:params] dissoc ::response-type)
-            updated-body [(eql/ast->query node)]]
+            updated-body (futil/ast->query node)]
         [updated-body alt])
       [body :default])))
 
@@ -285,6 +285,13 @@
 (defn fulcro-http-remote
   "Create a remote that (by default) communicates with the given url (which defaults to `/api`).
 
+  The options map can contain:
+
+  * `:url` - The URL to contact
+  * `:request-middleware` - See below
+  * `:response-middleware` - See below
+  * `:make-xhrio` - A constructor function to build a goog.net.XhrIo object, initialized however you see fit.
+
   The request middleware is a `(fn [request] modified-request)`. The `request` will have `:url`, `:body`, `:method`, and `:headers`. The
   request middleware defaults to `wrap-fulcro-request` (which encodes the request in transit+json). The result of this
   middleware chain on the outgoing request becomes the real outgoing request. It is allowed to modify the `url`.
@@ -340,7 +347,9 @@
                                                          (log/error e "Update handler for remote" url "failed with an exception."))))))
                               error-handler    (fn [error-result]
                                                  (try
-                                                   (result-handler (merge error-result {:status-code 500}))
+                                                   (let [error (merge error-result {:status-code 500})]
+                                                     (log/error (ex-info "Remote Error" error))
+                                                     (result-handler error))
                                                    (catch :default e
                                                      (log/error e "Error handler for remote" url "failed with an exception."))))]
                           (if-let [real-request (try

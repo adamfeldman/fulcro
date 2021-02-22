@@ -7,21 +7,29 @@
     [com.fulcrologic.fulcro.algorithms.timbre-support :refer [console-appender prefix-output-fn]]
     [com.fulcrologic.fulcro.application :as app]
     [com.fulcrologic.fulcro.data-fetch :as df]
-    [taoensso.timbre :as log]))
+    [com.fulcrologic.fulcro.algorithms.tx-processing.synchronous-tx-processing :as stx]
+    [taoensso.timbre :as log]
+    [fulcro-todomvc.custom-types :as custom-types]
+    [com.fulcrologic.fulcro.routing.dynamic-routing :as dr]
+    [com.fulcrologic.fulcro.algorithms.transit :as transit]))
+
+;; Have to be installed before we create websockets
+(defonce prevent-again (custom-types/install!))
 
 (defonce remote #_(fws/fulcro-websocket-remote {:auto-retry?        true
-                                                :request-timeout-ms 10000}) (http/fulcro-http-remote {}))
+                                              :request-timeout-ms 10000}) (http/fulcro-http-remote {}))
 
-(defonce app (app/fulcro-app {:remotes          {:remote remote}
-                              :client-did-mount (fn [_]
-                                                  (log/merge-config! {:output-fn prefix-output-fn
-                                                                      :appenders {:console (console-appender)}}))
-                              #_#_:optimized-render! kr2/render!}))
+(defonce app (stx/with-synchronous-transactions
+               (app/fulcro-app {:remotes          {:remote remote}
+                                :client-did-mount (fn [app]
+                                                    (dr/initialize! app)
+                                                    (df/load! app [:list/id 1] ui/TodoList)
+                                                    (log/merge-config! {:output-fn prefix-output-fn
+                                                                        :appenders {:console (console-appender)}}))})))
 
-(defn start []
+(defn ^:export start []
   (app/mount! app ui/Root "app")
-  (df/load! app :com.wsscode.pathom/trace nil)
-  #_(df/load! app [:list/id 1] ui/TodoList))
+  )
 
 (comment
   (app/set-root! app ui/Root {:initialize-state? true})
